@@ -365,6 +365,26 @@ def clear_v2_record() -> None:
     for key in ("v2_before_result", "v2_after_result", "v2_comparison"):
         st.session_state.pop(key, None)
     st.session_state["v2_stage"] = "before"
+    st.session_state["photo_record"] = st.session_state.get("photo_record", 0) + 1
+
+
+def photo_source(label: str, stage_key: str):
+    record = st.session_state.get("photo_record", 0)
+    mode = st.radio(
+        "获取照片方式", ["上传照片", "网页内拍照"], horizontal=True,
+        key=f"photo_source_{stage_key}_{record}",
+    )
+    if mode == "网页内拍照":
+        st.caption("允许浏览器使用摄像头，在网页内完成拍照。若无法开启摄像头，可切换为上传照片。")
+        return st.camera_input(
+            label.replace("上传", "拍摄"), resolution="1080p",
+            key=f"camera_{stage_key}_{record}",
+        )
+    st.caption("手机端建议选择图库中的照片；需要现场拍摄时，请切换到“网页内拍照”。")
+    return st.file_uploader(
+        label, type=["jpg", "jpeg", "png"],
+        key=f"upload_{stage_key}_{record}",
+    )
 
 
 stage = st.session_state.get("v2_stage", "before")
@@ -373,7 +393,7 @@ body_part = st.selectbox("护理部位", ["小腿", "手臂", "腋下", "比基�
 if stage == "before":
     st.markdown('<span class="pink-tag">局部照片</span><div class="flow-title">确认护理前照片</div>', unsafe_allow_html=True)
     st.markdown('<p class="microcopy">请拍摄皮肤局部近照。对焦在毛发上，避免滤镜、强反光和大面积背景。</p>', unsafe_allow_html=True)
-    before_upload = st.file_uploader("上传护理前照片", type=["jpg", "jpeg", "png"], key="v2_before_upload")
+    before_upload = photo_source("上传护理前照片", "before")
     if before_upload:
         try:
             before_image = read_uploaded_photo(before_upload)
@@ -422,7 +442,7 @@ elif stage == "after":
 
     st.markdown('<div class="flow-title" style="font-size:1.85rem; margin-top:2rem;">记录护理后照片</div>', unsafe_allow_html=True)
     st.markdown('<p class="microcopy">请尽量对准同一片皮肤，并保持相近距离、角度和光线。</p>', unsafe_allow_html=True)
-    after_upload = st.file_uploader("上传护理后照片", type=["jpg", "jpeg", "png"], key="v2_after_upload")
+    after_upload = photo_source("上传护理后照片", "after")
     if after_upload:
         try:
             after_image = read_uploaded_photo(after_upload)

@@ -1,20 +1,26 @@
 """Bound memory use before quality assessment, display and segmentation."""
+import logging
 import warnings
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_IMAGE_SIDE = 2048
 MAX_SOURCE_PIXELS = 80_000_000
+logger = logging.getLogger("hair_coverage.photo_input")
+logger.setLevel(logging.INFO)
 
 
 def prepare_photo(image: Image.Image) -> Image.Image:
+    logger.info("Preparing photo: format=%s dimensions=%s", image.format, image.size)
     if image.width * image.height > MAX_SOURCE_PIXELS:
         raise ValueError("照片分辨率过大，请使用普通拍照模式，关闭超高清模式后重试。")
     # JPEG draft decoding avoids a full-resolution RGB allocation when possible.
     image.draft("RGB", (MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
     image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
     image = ImageOps.exif_transpose(image)
-    return image.convert("RGB")
+    result = image.convert("RGB")
+    logger.info("Photo ready: dimensions=%s", result.size)
+    return result
 
 
 def read_uploaded_photo(upload) -> Image.Image:
