@@ -35,24 +35,43 @@ def load_person_segmenter():
 
 
 def photo_quality(rgb: np.ndarray) -> dict[str, float | str]:
-    """Quality gate. Thresholds are initial values to be calibrated on labelled data."""
+    """Return a conservative, non-blocking image-quality assessment.
+
+    A global Laplacian score is strongly affected by smooth skin, so it is a
+    weak proxy for whether dark, visible hairs can be analysed.  It should
+    warn users about confidence rather than reject ordinary phone photos.
+    """
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     brightness = float(gray.mean())
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    reasons: list[str] = []
-    if brightness < 55:
-        reasons.append("画面过暗")
-    elif brightness > 215:
-        reasons.append("画面过亮或可能过曝")
-    if sharpness < 45:
-        reasons.append("画面模糊，毛发边缘不清楚")
+    severe_reasons: list[str] = []
+    caution_reasons: list[str] = []
 
-    if reasons:
+    # Only near-black / near-white images are rejected.  Normal indoor phone
+    # photos with a soft skin background fall into "partly analysable" instead.
+    if brightness < 32:
+        severe_reasons.append("画面严重偏暗")
+    elif brightness < 50:
+        caution_reasons.append("画面偏暗")
+    elif brightness > 238:
+        severe_reasons.append("画面严重过亮或过曝")
+    elif brightness > 215:
+        caution_reasons.append("画面偏亮")
+
+    # The previous 45 threshold rejected many photos where individual dark
+    # hairs were still visible.  Below 12 is reserved for genuinely defocused
+    # images; 12-45 merely lowers confidence.
+    if sharpness < 12:
+        severe_reasons.append("毛发边缘明显失焦")
+    elif sharpness < 45:
+        caution_reasons.append("毛发边缘偏软，细小毛发可能漏检")
+
+    if severe_reasons:
         status = "建议重拍"
-        action = "；".join(reasons) + "。请靠近皮肤局部并重新对焦，避免强反光和阴影。"
-    elif sharpness < 75:
+        action = "；".join(severe_reasons) + "。建议靠近皮肤局部并重新对焦；仍可继续分析，但不建议据此做前后对比。"
+    elif caution_reasons:
         status = "部分可分析"
-        action = "画面基本可用，但细小毛发可能漏检；建议在稳定光线下复拍以获得更可靠对比。"
+        action = "；".join(caution_reasons) + "。可继续分析，结果作为初步参考；若要做前后对比，建议在稳定光线下复拍。"
     else:
         status = "可分析"
         action = "照片质量满足当前演示版的基础分析条件。"
@@ -364,7 +383,10 @@ if stage == "before":
         )
         if preview_quality["状态"] == "建议重拍":
             st.error(preview_quality["提示"])
-        elif st.button("确认并分析", type="primary", use_container_width=True):
+        elif preview_quality["状态"] == "部分可分析":
+            st.warning(preview_quality["提示"])
+        before_button = "仍然分析（结果可能不可靠）" if preview_quality["状态"] == "建议重拍" else "确认并分析"
+        if st.button(before_button, type="primary", use_container_width=True):
             with st.spinner("正在识别护理前的可见毛发…"):
                 st.session_state["v2_before_result"] = analyse_photo(before_image)
             st.session_state["v2_stage"] = "after"
@@ -403,7 +425,10 @@ elif stage == "after":
         st.markdown(f'<div class="summary-card">{quality_text}</div>', unsafe_allow_html=True)
         if preview_quality["状态"] == "建议重拍":
             st.error(preview_quality["提示"])
-        elif st.button("确认并对比", type="primary", use_container_width=True):
+        elif preview_quality["状态"] == "部分可分析":
+            st.warning(preview_quality["提示"])
+        after_button = "仍然对比（结果可能不可靠）" if preview_quality["状态"] == "建议重拍" else "确认并对比"
+        if st.button(after_button, type="primary", use_container_width=True):
             with st.spinner("正在核对两张照片并计算可见毛发覆盖率变化…"):
                 after_result = analyse_photo(after_image)
                 status, explanation = comparison_decision(before_result, after_result)
