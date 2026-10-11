@@ -13,6 +13,7 @@ import mediapipe as mp
 import numpy as np
 import streamlit as st
 from PIL import Image
+from photo_input import prepare_photo, read_uploaded_photo
 
 
 # V2 has independent source code. It temporarily reuses the bundled person
@@ -249,6 +250,7 @@ def visible_hair_mask(bgr: np.ndarray, skin: np.ndarray) -> np.ndarray:
 
 
 def analyse_photo(image: Image.Image) -> dict[str, object]:
+    image = prepare_photo(image)
     rgb = np.asarray(image.convert("RGB"))
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     quality = photo_quality(rgb)
@@ -373,7 +375,11 @@ if stage == "before":
     st.markdown('<p class="microcopy">请拍摄皮肤局部近照。对焦在毛发上，避免滤镜、强反光和大面积背景。</p>', unsafe_allow_html=True)
     before_upload = st.file_uploader("上传护理前照片", type=["jpg", "jpeg", "png"], key="v2_before_upload")
     if before_upload:
-        before_image = Image.open(before_upload)
+        try:
+            before_image = read_uploaded_photo(before_upload)
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
         preview_quality = photo_quality(np.asarray(before_image.convert("RGB")))
         st.image(before_image, caption="护理前局部照片", width="stretch")
         st.markdown(
@@ -418,7 +424,11 @@ elif stage == "after":
     st.markdown('<p class="microcopy">请尽量对准同一片皮肤，并保持相近距离、角度和光线。</p>', unsafe_allow_html=True)
     after_upload = st.file_uploader("上传护理后照片", type=["jpg", "jpeg", "png"], key="v2_after_upload")
     if after_upload:
-        after_image = Image.open(after_upload)
+        try:
+            after_image = read_uploaded_photo(after_upload)
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
         preview_quality = photo_quality(np.asarray(after_image.convert("RGB")))
         st.image(after_image, caption="护理后局部照片", width="stretch")
         quality_text = f"护理部位：{body_part}<br><b>照片质量：{preview_quality['状态']}</b>"
