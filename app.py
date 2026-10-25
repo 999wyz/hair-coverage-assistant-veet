@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -19,6 +21,8 @@ from photo_input import prepare_photo, read_uploaded_photo
 # V2 has independent source code. It temporarily reuses the bundled person
 # segmentation asset only to remove obvious background; it is not a hair model.
 PERSON_MODEL_PATH = PROJECT_DIR / "models" / "deeplab_v3.tflite"
+logger = logging.getLogger("hair_coverage.analysis")
+logger.setLevel(logging.INFO)
 
 st.set_page_config(page_title="Hair Coverage Assistant", page_icon="📷", layout="wide")
 
@@ -108,6 +112,13 @@ def central_foreground_mask(bgr: np.ndarray) -> np.ndarray:
     h, w = bgr.shape[:2]
     if h < 40 or w < 40:
         return np.zeros((h, w), dtype=np.uint8)
+    # Bound the expensive per-pixel GraphCut graph; hair detection retains
+    # the prepared image resolution. Only the coarse foreground prior scales.
+    if max(h, w) > 512:
+        scale = 512 / max(h, w)
+        small = cv2.resize(bgr, (max(40, round(w * scale)), max(40, round(h * scale))), interpolation=cv2.INTER_AREA)
+        region = central_foreground_mask(small)
+        return cv2.resize(region, (w, h), interpolation=cv2.INTER_NEAREST)
     grabcut_mask = np.zeros((h, w), dtype=np.uint8)
     background_model = np.zeros((1, 65), np.float64)
     foreground_model = np.zeros((1, 65), np.float64)
@@ -228,10 +239,11 @@ def visible_hair_mask(bgr: np.ndarray, skin: np.ndarray) -> np.ndarray:
     hair = cv2.morphologyEx(hair, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     # Remove isolated speckles but retain thin, interrupted visible strands.
     count, labels, stats, _ = cv2.connectedComponentsWithStats(hair, connectivity=8)
-    cleaned = np.zeros_like(hair)
-    for label in range(1, count):
-        if stats[label, cv2.CC_STAT_AREA] >= 4:
-            cleaned[labels == label] = 255
+    # A lookup keeps exactly the same pixels without scanning the full image
+    # separately for each of its potentially thousands of components.
+    keep = stats[:, cv2.CC_STAT_AREA] >= 4
+    keep[0] = False
+    cleaned = keep[labels].astype(np.uint8) * 255
 
     # Black-hat edges are often several pixels wider than the visible hair.
     # Reducing each accepted strand to a one-pixel centreline avoids inflating
@@ -249,14 +261,24 @@ def visible_hair_mask(bgr: np.ndarray, skin: np.ndarray) -> np.ndarray:
     return cv2.bitwise_and(skeleton, skin)
 
 
-def analyse_photo(image: Image.Image) -> dict[str, object]:
+def analyse_photo(image: Image.Image, progress=None) -> dict[str, object]:
+    started = time.perf_counter()
+    def report(message):
+        logger.info("Analysis stage=%s elapsed=%.2fs", message, time.perf_counter() - started)
+        if progress is not None:
+            progress(message)
+    report("正在准备照片…")
     image = prepare_photo(image)
     rgb = np.asarray(image.convert("RGB"))
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     quality = photo_quality(rgb)
+    report("正在识别人体范围…")
     human = person_mask(bgr)
+    report("正在确定皮肤分析区域…")
     analysis_region = central_skin_region(bgr, human)
+    report("正在检测可见毛发…")
     hair = visible_hair_mask(bgr, analysis_region)
+    report("正在生成标记图与覆盖率…")
     analysis_pixels = int(np.count_nonzero(analysis_region))
     # Coverage is hair-pixel area / detected human skin analysis area. The
     # denominator is deliberately never the whole photograph or its background.
@@ -274,6 +296,7 @@ def analyse_photo(image: Image.Image) -> dict[str, object]:
     contours, _ = cv2.findContours(analysis_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(overlay, contours, -1, (65, 200, 115), 2)
     overlay = cv2.addWeighted(rgb, 0.72, overlay, 0.28, 0)
+    report("分析完成")
     return {
         "rgb": rgb,
         "overlay": overlay,
@@ -414,7 +437,8 @@ if stage == "before":
         before_button = "仍然分析（结果可能不可靠）" if preview_quality["状态"] == "建议重拍" else "确认并分析"
         if st.button(before_button, type="primary", use_container_width=True):
             with st.spinner("正在识别护理前的可见毛发…"):
-                st.session_state["v2_before_result"] = analyse_photo(before_image)
+                analysis_status = st.empty()
+                st.session_state["v2_before_result"] = analyse_photo(before_image, progress=analysis_status.caption)
             st.session_state["v2_stage"] = "after"
             st.rerun()
     else:
@@ -460,7 +484,8 @@ elif stage == "after":
         after_button = "仍然对比（结果可能不可靠）" if preview_quality["状态"] == "建议重拍" else "确认并对比"
         if st.button(after_button, type="primary", use_container_width=True):
             with st.spinner("正在核对两张照片并计算可见毛发覆盖率变化…"):
-                after_result = analyse_photo(after_image)
+                analysis_status = st.empty()
+                after_result = analyse_photo(after_image, progress=analysis_status.caption)
                 status, explanation = comparison_decision(before_result, after_result)
             st.session_state["v2_after_result"] = after_result
             st.session_state["v2_comparison"] = {"status": status, "explanation": explanation}
