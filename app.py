@@ -73,7 +73,7 @@ def photo_quality(rgb: np.ndarray) -> dict[str, float | str]:
 
     if severe_reasons:
         status = "建议重拍"
-        action = "；".join(severe_reasons) + "。建议靠近皮肤局部并重新对焦；仍可继续分析，但不建议据此做前后对比。"
+        action = "；".join(severe_reasons) + "。建议靠近皮肤局部并重新对焦；仍可继续分析，能够定位皮肤时可展示前后对比，数值仅供参考。"
     elif caution_reasons:
         status = "部分可分析"
         action = "；".join(caution_reasons) + "。可继续分析，结果作为初步参考；若要做前后对比，建议在稳定光线下复拍。"
@@ -312,18 +312,23 @@ def comparison_decision(before: dict[str, object], after: dict[str, object]) -> 
     before_quality = before["quality"]
     after_quality = after["quality"]
     assert isinstance(before_quality, dict) and isinstance(after_quality, dict)
-    if before_quality["状态"] == "建议重拍" or after_quality["状态"] == "建议重拍":
-        return "建议重拍", "至少一张照片不达标；不显示覆盖率变化，避免把模糊或曝光差异误当成毛发变化。"
+    for result in (before, after):
+        region = result["analysis_region"]
+        if not isinstance(region, np.ndarray) or region.size == 0 or np.count_nonzero(region) < 0.015 * region.size:
+            return "建议重拍", "至少一张照片未能定位有效皮肤区域，暂无法计算覆盖率对比。请重新上传该照片。"
+        coverage = float(result["coverage"])
+        if not np.isfinite(coverage) or not 0 <= coverage <= 100:
+            return "建议重拍", "至少一张照片未能得到有效覆盖率，请重新分析该照片。"
 
     brightness_gap = abs(float(before_quality["亮度"]) - float(after_quality["亮度"]))
     before_skin = float(before["skin_fraction"])
     after_skin = float(after["skin_fraction"])
     skin_ratio = min(before_skin, after_skin) / max(0.001, max(before_skin, after_skin))
-    if brightness_gap > 30 or skin_ratio < 0.65:
-        return "建议重拍", "两张照片的光线或取景范围差异较大，无法可靠比较同一区域。请在相同距离、角度和光线下重拍。"
-    if before_quality["状态"] == "部分可分析" or after_quality["状态"] == "部分可分析" or brightness_gap > 18:
-        return "部分可比较", "可作初步参考，但细小毛发可能受清晰度或光线影响；建议按同一姿势复拍确认。"
-    return "可比较", "两张照片满足当前演示版的基础可比性条件。"
+    if brightness_gap > 18 or skin_ratio < 0.65 or any(
+        quality["状态"] != "可分析" for quality in (before_quality, after_quality)
+    ):
+        return "部分可比较", "已按两张照片各自的皮肤区域计算覆盖率。清晰度、光线或取景存在差异，变化数值仅供参考；请确认拍摄的是同一部位。"
+    return "可比较", "两张照片均可分析，已计算覆盖率变化；请确认拍摄的是同一部位。"
 
 
 def display_image(result: dict[str, object], mode: str) -> np.ndarray:
@@ -517,9 +522,11 @@ else:
         previews_left, previews_right = st.columns(2)
         previews_left.image(before_result["rgb"], caption="护理前", width="stretch")
         previews_right.image(after_result["rgb"], caption="护理后", width="stretch")
-        if status == "可比较" and relative_drop is not None:
+        if relative_drop is not None:
             point_change = before_coverage - after_coverage
-            change_title = "可见毛发覆盖减少" if point_change >= 0 else "可见毛发覆盖增加"
+            change_title = "可见毛发覆盖率相对减少" if point_change >= 0 else "可见毛发覆盖率相对增加"
+            if status == "部分可比较":
+                change_title += "（参考）"
             point_label = "减少" if point_change >= 0 else "增加"
             relative_label = "相对减少" if point_change >= 0 else "相对增加"
             st.markdown(
@@ -529,11 +536,19 @@ else:
                 '</div><hr class="compare-divider">'
                 f'<h3>{change_title}</h3><div class="percent">{abs(relative_drop):.0f}%</div>'
                 f'<div class="microcopy">覆盖率由 {before_coverage:.2f}% 变为 {after_coverage:.2f}%，{point_label} {abs(point_change):.2f} 个百分点。</div>'
-                '<div class="microcopy" style="margin-top:.75rem;">仅反映同一区域可见毛发的图像变化。</div></div>',
+                '<div class="microcopy" style="margin-top:.75rem;">仅反映两张照片中可见毛发覆盖率的差异。</div></div>',
                 unsafe_allow_html=True,
             )
         else:
-            st.info("前图覆盖率过低或照片仅部分可比较，因此不显示百分比变化结论。")
+            st.markdown(
+                '<div class="compare-card"><div class="compare-topline">'
+                f'<div><small>脱毛前覆盖率</small><b>{before_coverage:.2f}%</b></div>'
+                f'<div><small>脱毛后覆盖率</small><b>{after_coverage:.2f}%</b></div>'
+                '</div><hr class="compare-divider">'
+                f'<div class="microcopy">覆盖率变化：{after_coverage - before_coverage:+.2f} 个百分点。</div></div>',
+                unsafe_allow_html=True,
+            )
+            st.info("前图覆盖率接近零，仍展示前后数值和百分点变化，暂不计算相对变化百分比。")
 
     st.subheader("核对 AI 识别")
     view_mode = st.radio("查看方式", ["原图", "AI 标记图", "二值掩膜"], horizontal=True)
